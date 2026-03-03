@@ -1238,6 +1238,10 @@ def migrate_db():
         c.execute("ALTER TABLE order_items ADD COLUMN eta_set_at TIMESTAMP")
     if 'docking_completed_at' not in oi_cols:
         c.execute("ALTER TABLE order_items ADD COLUMN docking_completed_at TIMESTAMP")
+    try:
+        c.execute("ALTER TABLE order_items ADD COLUMN cut_list_issued INTEGER DEFAULT 0")
+    except Exception:
+        pass
     if 'requested_delivery_date' not in oi_cols:
         c.execute("ALTER TABLE order_items ADD COLUMN requested_delivery_date TEXT")
     # Add progress column to orders
@@ -3381,6 +3385,20 @@ def dispatch(method, path, params, body, conn):
             log_audit(conn, current_user["id"], "docking_complete", "orders", oid)
         return {"status": 200, "body": order_full(conn, oid)}
 
+    # Cut list issued flag
+    m = match("/order-items/:id/cut-list-issued", path)
+    if m and method == "PUT":
+        if not current_user:
+            return {"status": 401, "body": {"error": "Authentication required"}}
+        iid = int(m["id"])
+        row = conn.execute("SELECT * FROM order_items WHERE id=?", [iid]).fetchone()
+        if not row:
+            return {"status": 404, "body": {"error": "Order item not found"}}
+        conn.execute("UPDATE order_items SET cut_list_issued=1, updated_at=CURRENT_TIMESTAMP WHERE id=?", [iid])
+        conn.commit()
+        log_audit(conn, current_user["id"], "cut_list_issued", "order_items", iid)
+        return {"status": 200, "body": {"success": True}}
+
     # Single-item docking complete
     m = match("/order-items/:id/docking-complete", path)
     if m and method == "PUT":
@@ -3452,6 +3470,58 @@ def dispatch(method, path, params, body, conn):
             ORDER BY oi.created_at ASC
         """))
         return {"status": 200, "body": {"jobs": jobs}}
+
+    if method == "GET" and path == "/docking/board":
+        if not current_user:
+            return {"status": 401, "body": {"error": "Authentication required"}}
+        zone_filter = qs_dict.get("zone_id", [None])[0]
+        base_q = """
+            SELECT oi.*, o.order_number, o.client_id, c.name as client_name,
+                   s.name as sku_name, z.name as zone_name, z.code as zone_code,
+                   se.scheduled_date, se.station_id as sched_station_id
+            FROM order_items oi
+            JOIN orders o ON o.id = oi.order_id
+            LEFT JOIN clients c ON c.id = o.client_id
+            LEFT JOIN skus s ON s.id = oi.sku_id
+            LEFT JOIN zones z ON z.id = oi.zone_id
+            LEFT JOIN schedule_entries se ON se.order_item_id = oi.id
+        """
+
+        # Docking Required: status='C', has schedule entry, cut_list_issued=0
+        q1 = base_q + " WHERE oi.status='C' AND se.id IS NOT NULL AND oi.cut_list_issued=0"
+        if zone_filter:
+            q1 += " AND oi.zone_id=?"
+            params_q1 = [int(zone_filter)]
+        else:
+            params_q1 = []
+        q1 += " ORDER BY se.scheduled_date ASC, o.order_number"
+        docking_required = rows_to_list(conn.execute(q1, params_q1).fetchall())
+
+        # Cut List Issued: status='C', cut_list_issued=1
+        q2 = base_q + " WHERE oi.status='C' AND oi.cut_list_issued=1"
+        if zone_filter:
+            q2 += " AND oi.zone_id=?"
+            params_q2 = [int(zone_filter)]
+        else:
+            params_q2 = []
+        q2 += " ORDER BY se.scheduled_date ASC, o.order_number"
+        cut_list_issued = rows_to_list(conn.execute(q2, params_q2).fetchall())
+
+        # Docking Complete: status='R' (recently completed)
+        q3 = base_q + " WHERE oi.status='R'"
+        if zone_filter:
+            q3 += " AND oi.zone_id=?"
+            params_q3 = [int(zone_filter)]
+        else:
+            params_q3 = []
+        q3 += " ORDER BY oi.updated_at DESC LIMIT 50"
+        docking_complete = rows_to_list(conn.execute(q3, params_q3).fetchall())
+
+        return {"status": 200, "body": {
+            "docking_required": docking_required,
+            "cut_list_issued": cut_list_issued,
+            "docking_complete": docking_complete
+        }}
 
     # ----- DELIVERY TYPE TOGGLE -----
     m = match("/orders/:id/delivery-type", path)
@@ -3659,6 +3729,22 @@ def dispatch(method, path, params, body, conn):
                     unit_price = unit_price or sku["sell_price"]
                     body.setdefault("zone_id", sku["zone_id"])
                     body.setdefault("drawing_number", sku["drawing_number"])
+            # SKU prefix auto-routing if no zone_id set
+            if not body.get("zone_id") and sku_code:
+                prefix_upper = (sku_code or "").upper()
+                zone_route = None
+                if prefix_upper.startswith("CR"):
+                    zone_route = "CRT"
+                elif prefix_upper.startswith("2MP") or prefix_upper.startswith("1MP"):
+                    zone_route = "HMP"
+                elif prefix_upper.startswith("VP"):
+                    zone_route = "VIK"
+                elif prefix_upper.startswith("DTL"):
+                    zone_route = "DTL"
+                if zone_route:
+                    z_row = conn.execute("SELECT id FROM zones WHERE code=?", [zone_route]).fetchone()
+                    if z_row:
+                        body["zone_id"] = z_row["id"]
             line_total = quantity * float(unit_price)
             try:
                 cur = conn.execute("INSERT INTO order_items (order_id, sku_id, sku_code, product_name, quantity, unit_price, line_total, zone_id, station_id, scheduled_date, eta_date, drawing_number, special_instructions) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -7745,6 +7831,31 @@ def dispatch(method, path, params, body, conn):
         if cfg.get("smtp_password"):
             cfg["smtp_password"] = "****"
         return {"status": 200, "body": cfg}
+
+    if method == "POST" and path == "/admin/purge-data":
+        if not current_user or current_user["role"] not in ("admin", "executive"):
+            return {"status": 403, "body": {"error": "Forbidden"}}
+        tables_to_purge = [
+            "production_log_summary", "qa_audits", "dispatch_runs", "contractor_assignments",
+            "truck_work_orders", "delivery_log", "close_days", "inventory",
+            "post_production_log", "qa_defects", "qa_inspections",
+            "pause_logs", "setup_logs", "production_logs", "session_workers", "production_sessions",
+            "schedule_entries", "notification_log",
+            "order_items", "orders"
+        ]
+        # Order matters — delete child tables before parent tables
+        # audit_log last (insert purge record after)
+        for t in tables_to_purge:
+            try:
+                conn.execute(f"DELETE FROM {t}")
+            except Exception:
+                pass  # Table may not exist
+        # Clear audit_log but record the purge
+        conn.execute("DELETE FROM audit_log")
+        conn.execute("INSERT INTO audit_log (user_id, action, entity_type, details) VALUES (?, 'purge_all_data', 'system', ?)",
+            [current_user["id"], json.dumps({"tables_cleared": tables_to_purge + ["audit_log"]})])
+        conn.commit()
+        return {"status": 200, "body": {"success": True, "message": "All production data purged", "tables_cleared": tables_to_purge + ["audit_log"]}}
 
     # ----- SEND TEST EMAIL -----
     if method == "POST" and path == "/admin/email-test":
