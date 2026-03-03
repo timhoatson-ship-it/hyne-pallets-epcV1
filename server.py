@@ -2371,6 +2371,78 @@ def migrate_db():
     """)
     conn.commit()
 
+    # --- P1 Fix: Add labour_mins_per_unit to skus if missing ---
+    sku_cols = {row[1] for row in conn.execute("PRAGMA table_info(skus)").fetchall()}
+    if 'labour_mins_per_unit' not in sku_cols:
+        conn.execute("ALTER TABLE skus ADD COLUMN labour_mins_per_unit REAL DEFAULT 0")
+        conn.commit()
+
+    # --- P1 Fix: Add updated_at to order_items if missing ---
+    oi_cols2 = {row[1] for row in conn.execute("PRAGMA table_info(order_items)").fetchall()}
+    if 'updated_at' not in oi_cols2:
+        conn.execute("ALTER TABLE order_items ADD COLUMN updated_at TIMESTAMP")
+        conn.commit()
+
+    # --- P1 Fix: Add kanban_status to orders/order_items if missing ---
+    if 'kanban_status' not in existing_cols:
+        conn.execute("ALTER TABLE orders ADD COLUMN kanban_status TEXT")
+    oi_cols3 = {row[1] for row in conn.execute("PRAGMA table_info(order_items)").fetchall()}
+    if 'kanban_status' not in oi_cols3:
+        conn.execute("ALTER TABLE order_items ADD COLUMN kanban_status TEXT")
+    conn.commit()
+
+    # --- P1 Fix: Enforce PIN uniqueness via unique index (allows multiple NULLs) ---
+    try:
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_pin_unique ON users(pin) WHERE pin IS NOT NULL")
+        conn.commit()
+    except Exception as e:
+        print(f"[migrate_db] PIN uniqueness index: {e}")
+        conn.rollback()
+
+    # --- P1 Fix: Recreate users table with expanded role CHECK if needed ---
+    # SQLite cannot ALTER CHECK constraints, so we recreate the table.
+    try:
+        # Test if yardsman role is accepted
+        conn.execute("INSERT INTO users (full_name, role, username) VALUES ('__test_role__', 'yardsman', '__test_yardsman__')")
+        conn.execute("DELETE FROM users WHERE username='__test_yardsman__'")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        # Need to recreate the table with expanded CHECK
+        try:
+            c = conn.cursor()
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS users_expanded (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email TEXT UNIQUE,
+                    password_hash TEXT,
+                    pin TEXT,
+                    username TEXT UNIQUE,
+                    full_name TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN (
+                        'executive','office','planner','production_manager',
+                        'floor_worker','qa_lead','dispatch','yard','driver',
+                        'yardsman','chainsaw_operator','team_leader','ops_manager'
+                    )),
+                    default_zone_id INTEGER,
+                    is_active INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            c.execute("""
+                INSERT INTO users_expanded (id, email, password_hash, pin, username, full_name, role, default_zone_id, is_active, created_at, updated_at)
+                SELECT id, email, password_hash, pin, username, full_name, role, default_zone_id, is_active, created_at, updated_at
+                FROM users
+            """)
+            c.execute("DROP TABLE users")
+            c.execute("ALTER TABLE users_expanded RENAME TO users")
+            conn.commit()
+            print("[migrate_db] users table recreated with expanded role CHECK")
+        except Exception as e:
+            conn.rollback()
+            print(f"[migrate_db] users table role expansion failed: {e}")
+
     conn.commit()
 
     conn.close()
@@ -2380,7 +2452,12 @@ def migrate_db():
 # Auth helpers
 # ---------------------------------------------------------------------------
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "hyne_pallets_secret_2026_CHANGE_ME")
+JWT_SECRET = os.environ.get("JWT_SECRET", "")
+if not JWT_SECRET:
+    print("\n[FATAL] JWT_SECRET environment variable is not set.")
+    print("Set JWT_SECRET in your environment before starting the server.")
+    print("Example: export JWT_SECRET=$(python3 -c 'import secrets; print(secrets.token_hex(32))')\n")
+    import sys as _sys; _sys.exit(1)
 JWT_EXPIRY_SECONDS = 86400 * 7  # 7 days
 
 
@@ -6594,8 +6671,10 @@ def dispatch(method, path, params, body, conn):
         closed = rows_to_list(conn.execute("SELECT * FROM close_days WHERE closed_date >= ? AND closed_date <= ?", [date_from, date_to]).fetchall())
         return {"status": 200, "body": {"entries": result, "closed_days": closed}}
 
-    # ----- DEBUG -----
+    # ----- DEBUG (secured — exec only) -----
     if method == "GET" and path == "/debug":
+        if not user or user['role'] not in ('executive', 'office'):
+            return {"status": 403, "body": {"error": "Executive access required"}}
         return {"status": 200, "body": {"db_path": DB_PATH, "db_exists": os.path.exists(DB_PATH), "cwd": os.getcwd()}}
 
     # =========================================================================
