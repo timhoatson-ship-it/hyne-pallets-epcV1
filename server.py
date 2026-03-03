@@ -9453,7 +9453,7 @@ def dispatch(method, path, params, body, conn):
 
     # ----- OPS MANAGER DASHBOARD -----
     if method == "GET" and path == "/ops/dashboard":
-        from datetime import datetime, timedelta
+        # Note: datetime, timezone, timedelta already imported at module level (line 17)
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         LABOUR_RATE = 55.0  # $/hr
 
