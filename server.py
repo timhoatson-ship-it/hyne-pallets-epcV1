@@ -5926,7 +5926,7 @@ def dispatch(method, path, params, body, conn):
     if method == "POST" and path == "/accounting/sync":
         if not current_user:
             return {"status": 401, "body": {"error": "Authentication required"}}
-        if current_user.get("role") not in ("admin", "executive", "manager"):
+        if current_user.get("role") not in ("executive", "office", "ops_manager"):
             return {"status": 403, "body": {"error": "Insufficient permissions"}}
         row = conn.execute("SELECT * FROM accounting_config LIMIT 1").fetchone()
         provider = row["provider"] if row else "mock"
@@ -8853,7 +8853,9 @@ def dispatch(method, path, params, body, conn):
         current_user = get_current_user(conn)
         if not _is_chainsaw(current_user):
             return {"status": 403, "body": {"error": "Chainsaw or floor worker role required"}}
-        qr_codes = body.get("qr_codes", [])[:5]
+        qr_codes = body.get("qr_codes", [])
+        if len(qr_codes) > 5:
+            return {"status": 400, "body": {"error": f"Maximum 5 QR codes per bulk consume (received {len(qr_codes)})"}}
         results = []
         for qr in qr_codes:
             pack = row_to_dict(conn.execute(
@@ -9534,7 +9536,9 @@ def dispatch(method, path, params, body, conn):
     if method == "GET" and path == "/ops/dashboard":
         # Note: datetime, timezone, timedelta already imported at module level (line 17)
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        LABOUR_RATE = 55.0  # $/hr
+        # Fetch labour rate from config (default $55/hr)
+        lc_row = conn.execute("SELECT rate_per_hour FROM target_labour_rates WHERE is_default=1 LIMIT 1").fetchone()
+        LABOUR_RATE = float(lc_row["rate_per_hour"]) if lc_row and lc_row["rate_per_hour"] else 55.0
 
         # ---- KPIs ----
         active_workers = conn.execute(

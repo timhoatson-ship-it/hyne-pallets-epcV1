@@ -275,7 +275,7 @@ const LoginPage = ({ onLogin }) => {
                 <button className="btn btn-primary w-full justify-center py-3 text-base mt-2" disabled={loading}>
                   {loading ? <Spinner /> : 'Sign In'}
                 </button>
-                <p className="text-xs text-gray-400 text-center mt-2">Demo: tim@hynepallets.com.au / admin123</p>
+                <p className="text-xs text-gray-400 text-center mt-2">Hyne Pallets QLD — Manufacturing Management</p>
               </form>
             ) : (
               <div>
@@ -302,7 +302,7 @@ const LoginPage = ({ onLogin }) => {
                     {loading ? '...' : '✓'}
                   </button>
                 </div>
-                <p className="text-xs text-gray-400 text-center">Demo PIN: 123456</p>
+                <p className="text-xs text-gray-400 text-center">Enter your 6-digit PIN</p>
               </div>
             )}
           </div>
@@ -3476,6 +3476,18 @@ const ProductionManager = ({ token }) => {
   const zoneEntries = schedule.filter(s => s.zone_id === activeZone);
   const unassigned = zoneEntries.filter(s => !s.station_id);
   const stationLabel = activeZoneObj?.code === 'HMP' ? 'Table' : activeZoneObj?.code === 'VIK' ? 'Machine' : 'Station';
+
+  if (!zones.length && !loading) {
+    return (
+      <div className="p-6">
+        <div className="hp-card text-center py-12">
+          <div style={{fontSize:'48px',marginBottom:'12px'}}>🏭</div>
+          <div className="text-lg font-bold text-gray-600 mb-2">No Zones Available</div>
+          <div className="text-sm text-gray-400">Zones will appear here once configured in Admin.</div>
+        </div>
+      </div>
+    );
+  }
 
   // Navigate dates
   const shiftDate = (days) => {
@@ -6970,6 +6982,18 @@ const AdminPage = ({ token }) => {
   // Costing / labour config
   const [labourConfig, setLabourConfig] = useState(null); // { default_rate, user_rates: [] }
   const [labourRateEdit, setLabourRateEdit] = useState(''); // string for the default rate field
+  // SKU Management
+  const [skus, setSkus] = useState([]);
+  const [skuSearch, setSkuSearch] = useState('');
+  const [skuZoneFilter, setSkuZoneFilter] = useState('');
+  const [skuModal, setSkuModal] = useState(false);
+  const [skuForm, setSkuForm] = useState({code:'',name:'',zone_id:'',drawing_number:'',labour_cost:'',material_cost:'',sell_price:'',labour_mins_per_unit:''});
+  const [skuLoading, setSkuLoading] = useState(false);
+  // Truck Management
+  const [allTrucksAdmin, setAllTrucksAdmin] = useState([]);
+  const [truckModal, setTruckModal] = useState(false);
+  const [truckForm, setTruckForm] = useState({name:'',rego:'',driver_name:'',truck_type:'internal',capacity_notes:''});
+  const [truckLoading, setTruckLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -7113,7 +7137,66 @@ const AdminPage = ({ token }) => {
     } catch(e) { toast(e.message,'error'); }
   };
 
-  const ROLES = ['executive','admin','office','planner','floor_worker','team_leader','qa','dispatch','ops_manager'];
+  // SKU load / CRUD
+  const loadSkus = async () => {
+    setSkuLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (skuSearch) params.set('q', skuSearch);
+      if (skuZoneFilter) params.set('zone_id', skuZoneFilter);
+      const data = await api(`/skus/search?${params.toString()}`, {}, token).catch(() => api('/skus', {}, token));
+      setSkus(Array.isArray(data) ? data : []);
+    } catch(e) { toast(e.message,'error'); }
+    setSkuLoading(false);
+  };
+  const createSku = async () => {
+    try {
+      const payload = {...skuForm};
+      ['labour_cost','material_cost','sell_price','labour_mins_per_unit'].forEach(f => { if (payload[f] !== '') payload[f] = parseFloat(payload[f]) || 0; else delete payload[f]; });
+      if (payload.zone_id) payload.zone_id = parseInt(payload.zone_id); else delete payload.zone_id;
+      await api('/skus', {method:'POST',body:JSON.stringify(payload)}, token);
+      toast('SKU created','success');
+      setSkuModal(false);
+      setSkuForm({code:'',name:'',zone_id:'',drawing_number:'',labour_cost:'',material_cost:'',sell_price:'',labour_mins_per_unit:''});
+      loadSkus();
+    } catch(e) { toast(e.message,'error'); }
+  };
+  const saveSkuField = async (skuId, field, value) => {
+    try {
+      const payload = {[field]: ['labour_cost','material_cost','sell_price','labour_mins_per_unit'].includes(field) ? parseFloat(value)||0 : value};
+      await api(`/skus/${skuId}`, {method:'PUT',body:JSON.stringify(payload)}, token);
+      toast('SKU updated','success');
+      setSkus(prev => prev.map(s => s.id === skuId ? {...s, [field]: payload[field]} : s));
+    } catch(e) { toast(e.message,'error'); }
+  };
+
+  // Truck load / CRUD
+  const loadTrucks = async () => {
+    setTruckLoading(true);
+    try {
+      const data = await api('/trucks', {}, token);
+      setAllTrucksAdmin(Array.isArray(data) ? data : []);
+    } catch(e) { toast(e.message,'error'); }
+    setTruckLoading(false);
+  };
+  const createTruck = async () => {
+    try {
+      await api('/trucks', {method:'POST',body:JSON.stringify(truckForm)}, token);
+      toast('Truck created','success');
+      setTruckModal(false);
+      setTruckForm({name:'',rego:'',driver_name:'',truck_type:'internal',capacity_notes:''});
+      loadTrucks();
+    } catch(e) { toast(e.message,'error'); }
+  };
+  const saveTruckField = async (truckId, field, value) => {
+    try {
+      await api(`/trucks/${truckId}`, {method:'PUT',body:JSON.stringify({[field]:value})}, token);
+      toast('Truck updated','success');
+      setAllTrucksAdmin(prev => prev.map(t => t.id === truckId ? {...t, [field]: value} : t));
+    } catch(e) { toast(e.message,'error'); }
+  };
+
+  const ROLES = ['executive','admin','office','planner','floor_worker','team_leader','qa','dispatch','ops_manager','yardsman','chainsaw_operator','driver'];
   const STATION_TYPES = ['machine','table','centre','station'];
   const CAPACITY_METRICS = ['units_per_machine','man_hours_per_table','man_hours_per_centre','man_hours_per_station'];
 
@@ -7122,8 +7205,12 @@ const AdminPage = ({ token }) => {
       <h1 className="text-2xl font-black text-[#07324C]">Admin</h1>
 
       <div className="tab-bar">
-        {['users','zones','costing','email','accounting'].map(t => (
-          <div key={t} className={`tab-item ${tab===t?'active':''}`} onClick={()=>setTab(t)} style={{textTransform:'capitalize'}}>{t}</div>
+        {['users','zones','costing','email','accounting','skus','trucks'].map(t => (
+          <div key={t} className={`tab-item ${tab===t?'active':''}`} onClick={()=>{
+            setTab(t);
+            if (t==='skus') setTimeout(()=>loadSkus(),0);
+            if (t==='trucks') setTimeout(()=>loadTrucks(),0);
+          }} style={{textTransform:'capitalize'}}>{t==='skus'?'SKUs':t}</div>
         ))}
       </div>
 
@@ -7530,6 +7617,265 @@ const AdminPage = ({ token }) => {
                       ))}
                     </tbody>
                   </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* SKUs */}
+          {tab === 'skus' && (
+            <div className="space-y-4">
+              <div className="hp-card">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-sm font-bold text-gray-500 uppercase tracking-wider">SKU Management ({skus.length})</h2>
+                  <button className="btn btn-primary btn-sm" onClick={()=>setSkuModal(true)}>+ Add SKU</button>
+                </div>
+                {/* Search / filter bar */}
+                <div className="flex gap-3 mb-4 flex-wrap">
+                  <input
+                    className="hp-input" style={{flex:'1 1 220px',minWidth:160}}
+                    placeholder="Search code or name..."
+                    value={skuSearch}
+                    onChange={e=>setSkuSearch(e.target.value)}
+                    onKeyDown={e=>e.key==='Enter'&&loadSkus()}
+                  />
+                  <select
+                    className="hp-input" style={{flex:'0 0 180px'}}
+                    value={skuZoneFilter}
+                    onChange={e=>setSkuZoneFilter(e.target.value)}
+                  >
+                    <option value="">All Zones</option>
+                    {zones.map(z=><option key={z.id} value={z.id}>{z.name}</option>)}
+                  </select>
+                  <button className="btn btn-secondary btn-sm" onClick={loadSkus}>Search</button>
+                </div>
+
+                {skuLoading ? (
+                  <div className="flex justify-center py-8"><Spinner /></div>
+                ) : skus.length === 0 ? (
+                  <Empty msg="No SKUs found" />
+                ) : (
+                  <div className="table-scroll">
+                    <table className="hp-table">
+                      <thead>
+                        <tr>
+                          <th>Code</th>
+                          <th>Name</th>
+                          <th>Zone</th>
+                          <th>Drawing #</th>
+                          <th>Labour Cost</th>
+                          <th>Material Cost</th>
+                          <th>Sell Price</th>
+                          <th>Mins/Unit</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {skus.map(s => (
+                          <tr key={s.id}>
+                            <td className="font-mono font-semibold text-[#07324C]">{s.code}</td>
+                            <td>{s.name}</td>
+                            <td className="text-xs text-gray-500">{s.zone_name || s.zone_id || '—'}</td>
+                            <td className="text-xs text-gray-500">{s.drawing_number || '—'}</td>
+                            <td>
+                              <input
+                                type="number" min="0" step="0.01" className="hp-input"
+                                style={{width:90,padding:'2px 6px',fontSize:14}}
+                                defaultValue={s.labour_cost ?? ''}
+                                placeholder="—"
+                                onBlur={e=>e.target.value!==String(s.labour_cost??'')&&saveSkuField(s.id,'labour_cost',e.target.value)}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                type="number" min="0" step="0.01" className="hp-input"
+                                style={{width:90,padding:'2px 6px',fontSize:14}}
+                                defaultValue={s.material_cost ?? ''}
+                                placeholder="—"
+                                onBlur={e=>e.target.value!==String(s.material_cost??'')&&saveSkuField(s.id,'material_cost',e.target.value)}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                type="number" min="0" step="0.01" className="hp-input"
+                                style={{width:90,padding:'2px 6px',fontSize:14}}
+                                defaultValue={s.sell_price ?? ''}
+                                placeholder="—"
+                                onBlur={e=>e.target.value!==String(s.sell_price??'')&&saveSkuField(s.id,'sell_price',e.target.value)}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                type="number" min="0" step="1" className="hp-input"
+                                style={{width:80,padding:'2px 6px',fontSize:14}}
+                                defaultValue={s.labour_mins_per_unit ?? ''}
+                                placeholder="—"
+                                onBlur={e=>e.target.value!==String(s.labour_mins_per_unit??'')&&saveSkuField(s.id,'labour_mins_per_unit',e.target.value)}
+                              />
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* Add SKU modal */}
+              {skuModal && (
+                <div className="overlay" onClick={e=>e.target===e.currentTarget&&setSkuModal(false)}>
+                  <div className="modal" style={{maxWidth:520}}>
+                    <h3 className="font-black text-[#07324C] text-lg mb-4">Add New SKU</h3>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="hp-label">Code *</label>
+                        <input className="hp-input" value={skuForm.code} onChange={e=>setSkuForm(p=>({...p,code:e.target.value}))} placeholder="e.g. SKU-001" />
+                      </div>
+                      <div>
+                        <label className="hp-label">Name *</label>
+                        <input className="hp-input" value={skuForm.name} onChange={e=>setSkuForm(p=>({...p,name:e.target.value}))} placeholder="e.g. Standard Pallet" />
+                      </div>
+                      <div>
+                        <label className="hp-label">Zone</label>
+                        <select className="hp-input" value={skuForm.zone_id} onChange={e=>setSkuForm(p=>({...p,zone_id:e.target.value}))}>
+                          <option value="">No zone</option>
+                          {zones.map(z=><option key={z.id} value={z.id}>{z.name}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="hp-label">Drawing #</label>
+                        <input className="hp-input" value={skuForm.drawing_number} onChange={e=>setSkuForm(p=>({...p,drawing_number:e.target.value}))} placeholder="e.g. DRW-042" />
+                      </div>
+                      <div>
+                        <label className="hp-label">Labour Cost ($)</label>
+                        <input type="number" min="0" step="0.01" className="hp-input" value={skuForm.labour_cost} onChange={e=>setSkuForm(p=>({...p,labour_cost:e.target.value}))} placeholder="0.00" />
+                      </div>
+                      <div>
+                        <label className="hp-label">Material Cost ($)</label>
+                        <input type="number" min="0" step="0.01" className="hp-input" value={skuForm.material_cost} onChange={e=>setSkuForm(p=>({...p,material_cost:e.target.value}))} placeholder="0.00" />
+                      </div>
+                      <div>
+                        <label className="hp-label">Sell Price ($)</label>
+                        <input type="number" min="0" step="0.01" className="hp-input" value={skuForm.sell_price} onChange={e=>setSkuForm(p=>({...p,sell_price:e.target.value}))} placeholder="0.00" />
+                      </div>
+                      <div>
+                        <label className="hp-label">Mins / Unit</label>
+                        <input type="number" min="0" step="1" className="hp-input" value={skuForm.labour_mins_per_unit} onChange={e=>setSkuForm(p=>({...p,labour_mins_per_unit:e.target.value}))} placeholder="0" />
+                      </div>
+                    </div>
+                    <div className="flex gap-3 mt-6">
+                      <button className="btn btn-primary flex-1 justify-center" onClick={createSku}>Create SKU</button>
+                      <button className="btn btn-secondary" onClick={()=>setSkuModal(false)}>Cancel</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TRUCKS */}
+          {tab === 'trucks' && (
+            <div className="space-y-4">
+              <div className="hp-card">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-sm font-bold text-gray-500 uppercase tracking-wider">Truck Management ({allTrucksAdmin.length})</h2>
+                  <button className="btn btn-primary btn-sm" onClick={()=>setTruckModal(true)}>+ Add Truck</button>
+                </div>
+
+                {truckLoading ? (
+                  <div className="flex justify-center py-8"><Spinner /></div>
+                ) : allTrucksAdmin.length === 0 ? (
+                  <Empty msg="No trucks found" />
+                ) : (
+                  <div className="table-scroll">
+                    <table className="hp-table">
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Rego</th>
+                          <th>Driver</th>
+                          <th>Type</th>
+                          <th>Capacity Notes</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {allTrucksAdmin.map(t => (
+                          <tr key={t.id}>
+                            <td className="font-semibold">{t.name}</td>
+                            <td className="font-mono text-xs">{t.rego || '—'}</td>
+                            <td>
+                              <input
+                                className="hp-input"
+                                style={{width:140,padding:'2px 6px',fontSize:14}}
+                                defaultValue={t.driver_name || ''}
+                                placeholder="—"
+                                onBlur={e=>e.target.value!==String(t.driver_name||'')&&saveTruckField(t.id,'driver_name',e.target.value)}
+                              />
+                            </td>
+                            <td>
+                              <span className={`badge ${t.truck_type==='contractor'?'badge-B':'badge-C'}`} style={{textTransform:'capitalize'}}>
+                                {t.truck_type || 'internal'}
+                              </span>
+                            </td>
+                            <td>
+                              <input
+                                className="hp-input"
+                                style={{width:180,padding:'2px 6px',fontSize:14}}
+                                defaultValue={t.capacity_notes || ''}
+                                placeholder="—"
+                                onBlur={e=>e.target.value!==String(t.capacity_notes||'')&&saveTruckField(t.id,'capacity_notes',e.target.value)}
+                              />
+                            </td>
+                            <td>
+                              {t.is_active ? (
+                                <span className="text-green-600 font-bold text-xs">Active</span>
+                              ) : (
+                                <span className="text-gray-400 text-xs">Inactive</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* Add Truck modal */}
+              {truckModal && (
+                <div className="overlay" onClick={e=>e.target===e.currentTarget&&setTruckModal(false)}>
+                  <div className="modal" style={{maxWidth:460}}>
+                    <h3 className="font-black text-[#07324C] text-lg mb-4">Add New Truck</h3>
+                    <div className="space-y-3">
+                      <div>
+                        <label className="hp-label">Truck Name *</label>
+                        <input className="hp-input" value={truckForm.name} onChange={e=>setTruckForm(p=>({...p,name:e.target.value}))} placeholder="e.g. Truck 1" />
+                      </div>
+                      <div>
+                        <label className="hp-label">Rego</label>
+                        <input className="hp-input" value={truckForm.rego} onChange={e=>setTruckForm(p=>({...p,rego:e.target.value}))} placeholder="e.g. ABC123" />
+                      </div>
+                      <div>
+                        <label className="hp-label">Driver Name</label>
+                        <input className="hp-input" value={truckForm.driver_name} onChange={e=>setTruckForm(p=>({...p,driver_name:e.target.value}))} placeholder="e.g. John Smith" />
+                      </div>
+                      <div>
+                        <label className="hp-label">Type</label>
+                        <select className="hp-input" value={truckForm.truck_type} onChange={e=>setTruckForm(p=>({...p,truck_type:e.target.value}))}>
+                          <option value="internal">Internal</option>
+                          <option value="contractor">Contractor</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="hp-label">Capacity Notes</label>
+                        <input className="hp-input" value={truckForm.capacity_notes} onChange={e=>setTruckForm(p=>({...p,capacity_notes:e.target.value}))} placeholder="e.g. Max 3t, side loader" />
+                      </div>
+                    </div>
+                    <div className="flex gap-3 mt-6">
+                      <button className="btn btn-primary flex-1 justify-center" onClick={createTruck}>Create Truck</button>
+                      <button className="btn btn-secondary" onClick={()=>setTruckModal(false)}>Cancel</button>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
@@ -8006,6 +8352,243 @@ const TimberAdminSection = ({ token }) => {
 // ═══════════════════════════════════════════════════════════════
 // TIMBER INVENTORY PAGE
 // ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+// TIMBER STOCKTAKE TAB
+// ═══════════════════════════════════════════════════════════════
+const TimberStocktakeTab = ({ token }) => {
+  const [stocktakeId, setStocktakeId] = useState(null);
+  const [sheet, setSheet] = useState([]);
+  const [counts, setCounts] = useState({});
+  const [status, setStatus] = useState('idle'); // idle | counting | submitted | completed
+  const [variances, setVariances] = useState(null);
+  const [notes, setNotes] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState('');
+
+  const startStocktake = async () => {
+    setLoading(true);
+    setErr('');
+    try {
+      const res = await api('/timber/stocktakes', { method: 'POST', body: JSON.stringify({ notes }) }, token);
+      const id = res.id;
+      setStocktakeId(id);
+      const sheetData = await api(`/timber/stocktakes/${id}/sheet`, {}, token);
+      setSheet(sheetData || []);
+      const initCounts = {};
+      (sheetData || []).forEach(row => {
+        initCounts[row.spec_id] = { physical_count_packs: '', physical_count_m3: '' };
+      });
+      setCounts(initCounts);
+      setStatus('counting');
+    } catch (e) {
+      setErr(e.message || 'Failed to start stocktake');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const submitCounts = async () => {
+    setLoading(true);
+    setErr('');
+    try {
+      const countsArray = sheet.map(row => ({
+        spec_id: row.spec_id,
+        physical_count_packs: parseFloat(counts[row.spec_id]?.physical_count_packs) || 0,
+        physical_count_m3: counts[row.spec_id]?.physical_count_m3 !== '' ? parseFloat(counts[row.spec_id]?.physical_count_m3) : null,
+      }));
+      await api(`/timber/stocktakes/${stocktakeId}/counts`, { method: 'POST', body: JSON.stringify({ counts: countsArray }) }, token);
+      const varReport = sheet.map(row => {
+        const submitted = countsArray.find(c => c.spec_id === row.spec_id) || {};
+        const sysPacks = parseFloat(row.system_count_packs) || 0;
+        const physPacks = submitted.physical_count_packs || 0;
+        return {
+          ...row,
+          physical_count_packs: physPacks,
+          physical_count_m3: submitted.physical_count_m3,
+          variance_packs: physPacks - sysPacks,
+        };
+      });
+      setVariances(varReport);
+      setStatus('submitted');
+    } catch (e) {
+      setErr(e.message || 'Failed to submit counts');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const completeStocktake = async () => {
+    setLoading(true);
+    setErr('');
+    try {
+      await api(`/timber/stocktakes/${stocktakeId}/complete`, { method: 'POST', body: JSON.stringify({}) }, token);
+      setStatus('completed');
+    } catch (e) {
+      setErr(e.message || 'Failed to complete stocktake');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const resetStocktake = () => {
+    setStocktakeId(null);
+    setSheet([]);
+    setCounts({});
+    setVariances(null);
+    setNotes('');
+    setErr('');
+    setStatus('idle');
+  };
+
+  if (status === 'idle') {
+    return (
+      <div className="hp-card" style={{ maxWidth: 560 }}>
+        <h2 className="font-bold text-lg mb-3" style={{ color: '#07324C' }}>Start New Stocktake</h2>
+        <p className="text-gray-500 text-sm mb-4">Begin a physical count of all timber inventory. System quantities will be pre-filled for comparison.</p>
+        <div className="mb-4">
+          <label className="block text-sm font-semibold mb-1 text-gray-700">Notes (optional)</label>
+          <input className="hp-input w-full" placeholder="e.g. End of month stocktake" value={notes} onChange={e => setNotes(e.target.value)} />
+        </div>
+        {err && <div className="text-red-600 text-sm mb-3">{err}</div>}
+        <button className="btn btn-primary" onClick={startStocktake} disabled={loading}>
+          {loading ? 'Starting...' : 'Start New Stocktake'}
+        </button>
+      </div>
+    );
+  }
+
+  if (status === 'counting') {
+    return (
+      <div>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-bold text-lg" style={{ color: '#07324C' }}>Stocktake #{stocktakeId} — Count Sheet</h2>
+          <button className="btn btn-secondary btn-sm" onClick={resetStocktake}>Cancel</button>
+        </div>
+        <p className="text-gray-500 text-sm mb-4">Enter physical pack counts for each spec. M3 is optional.</p>
+        <div className="table-scroll">
+          <table className="hp-table">
+            <thead>
+              <tr>
+                <th style={{ background: '#07324C', color: '#fff' }}>Spec</th>
+                <th style={{ background: '#07324C', color: '#fff' }}>Type</th>
+                <th style={{ background: '#07324C', color: '#fff' }}>System Packs</th>
+                <th style={{ background: '#07324C', color: '#fff' }}>Physical Packs *</th>
+                <th style={{ background: '#07324C', color: '#fff' }}>Physical M3</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sheet.map(row => (
+                <tr key={row.spec_id}>
+                  <td className="font-medium">{row.spec_name || row.spec_id}</td>
+                  <td>{row.timber_type || '—'}</td>
+                  <td className="text-center font-mono">{row.system_count_packs ?? '—'}</td>
+                  <td>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      className="hp-input w-full"
+                      style={{ minWidth: 80 }}
+                      placeholder="0"
+                      value={counts[row.spec_id]?.physical_count_packs ?? ''}
+                      onChange={e => setCounts(prev => ({ ...prev, [row.spec_id]: { ...prev[row.spec_id], physical_count_packs: e.target.value } }))}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      className="hp-input w-full"
+                      style={{ minWidth: 80 }}
+                      placeholder="optional"
+                      value={counts[row.spec_id]?.physical_count_m3 ?? ''}
+                      onChange={e => setCounts(prev => ({ ...prev, [row.spec_id]: { ...prev[row.spec_id], physical_count_m3: e.target.value } }))}
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {err && <div className="text-red-600 text-sm mt-3">{err}</div>}
+        <div className="mt-4">
+          <button className="btn btn-primary" onClick={submitCounts} disabled={loading}>
+            {loading ? 'Submitting...' : 'Submit Counts'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (status === 'submitted') {
+    const hasVariances = variances && variances.some(v => v.variance_packs !== 0);
+    return (
+      <div>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-bold text-lg" style={{ color: '#07324C' }}>Stocktake #{stocktakeId} — Variance Report</h2>
+        </div>
+        {hasVariances && (
+          <div className="mb-3 px-3 py-2 rounded-lg text-sm font-semibold" style={{ background: '#FEF2F2', color: '#B91C1C' }}>
+            Variances detected — review before completing.
+          </div>
+        )}
+        {!hasVariances && (
+          <div className="mb-3 px-3 py-2 rounded-lg text-sm font-semibold" style={{ background: '#F0FDF4', color: '#166534' }}>
+            All counts match system quantities.
+          </div>
+        )}
+        <div className="table-scroll mb-4">
+          <table className="hp-table">
+            <thead>
+              <tr>
+                <th style={{ background: '#07324C', color: '#fff' }}>Spec</th>
+                <th style={{ background: '#07324C', color: '#fff' }}>System</th>
+                <th style={{ background: '#07324C', color: '#fff' }}>Physical</th>
+                <th style={{ background: '#07324C', color: '#fff' }}>Variance</th>
+              </tr>
+            </thead>
+            <tbody>
+              {variances.map(row => (
+                <tr key={row.spec_id} style={row.variance_packs !== 0 ? { background: '#FFF7ED' } : {}}>
+                  <td className="font-medium">{row.spec_name || row.spec_id}</td>
+                  <td className="text-center font-mono">{row.system_count_packs ?? '—'}</td>
+                  <td className="text-center font-mono">{row.physical_count_packs}</td>
+                  <td className="text-center font-bold font-mono" style={{ color: row.variance_packs === 0 ? '#166534' : (row.variance_packs > 0 ? '#1D4ED8' : '#B91C1C') }}>
+                    {row.variance_packs > 0 ? `+${row.variance_packs}` : row.variance_packs}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {err && <div className="text-red-600 text-sm mb-3">{err}</div>}
+        <div className="flex gap-3">
+          <button className="btn btn-primary" onClick={completeStocktake} disabled={loading}>
+            {loading ? 'Completing...' : 'Complete Stocktake'}
+          </button>
+          <button className="btn btn-secondary" onClick={resetStocktake}>Discard</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (status === 'completed') {
+    return (
+      <div className="hp-card" style={{ maxWidth: 480, textAlign: 'center' }}>
+        <div style={{ fontSize: 48, marginBottom: 12 }}>✅</div>
+        <span className="inline-block px-4 py-2 rounded-full font-bold text-white text-base mb-4" style={{ background: '#166534' }}>
+          Stocktake Completed
+        </span>
+        <p className="text-gray-500 text-sm mb-5">Stocktake #{stocktakeId} has been finalised and inventory counts updated.</p>
+        <button className="btn btn-primary" onClick={resetStocktake}>Start Another Stocktake</button>
+      </div>
+    );
+  }
+
+  return null;
+};
+
 const TimberInventoryPage = ({ token, user }) => {
   const canFinance = canSeeTimberCost(user);
   const canExec = isExec(user);
@@ -8014,6 +8597,7 @@ const TimberInventoryPage = ({ token, user }) => {
     { id: 'inventory', label: 'Inventory' },
     ...((['executive','admin','office','planner','production_manager'].includes(user?.role)) ? [{ id: 'pipeline', label: 'Pipeline / Deliveries' }] : []),
     ...(canFinance ? [{ id: 'finance', label: 'Finance / CSV Import' }] : []),
+    ...(canExec ? [{ id: 'stocktake', label: 'Stocktake' }] : []),
     ...(canExec ? [{ id: 'admin', label: 'Timber Admin' }] : []),
   ];
   const [tab, setTab] = useState('inventory');
@@ -8039,6 +8623,7 @@ const TimberInventoryPage = ({ token, user }) => {
       {tab === 'inventory' && <TimberInventoryTab token={token} user={user} />}
       {tab === 'pipeline' && <TimberPipelineTab token={token} user={user} />}
       {tab === 'finance' && <TimberFinanceTab token={token} user={user} />}
+      {tab === 'stocktake' && canExec && <TimberStocktakeTab token={token} />}
       {tab === 'admin' && canExec && <TimberAdminSection token={token} />}
     </div>
   );
@@ -9604,7 +10189,16 @@ const App = () => {
   // ── PWA deep-link: pick up _token/_page from URL params ──
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const pwaToken = params.get('_token');
+    let pwaToken = params.get('_token');
+    // Prefer sessionStorage handoff (more secure than URL params)
+    const handoff = sessionStorage.getItem('hyne_pwa_handoff');
+    if (handoff) {
+      try {
+        const h = JSON.parse(handoff);
+        pwaToken = h.token;
+        sessionStorage.removeItem('hyne_pwa_handoff');
+      } catch(e) {}
+    }
     const pwaPage = params.get('_page');
     const pwaApp = params.get('_app');
     if (pwaToken && pwaPage) {
@@ -9617,7 +10211,7 @@ const App = () => {
           if (userData && userData.id) {
             setUser(userData);
             setToken(pwaToken);
-            const VALID_PAGES = ['dashboard','office','planning','production','dispatch','reporting','inventory','timber','admin','floor-tablet','chainsaw','receiving'];
+            const VALID_PAGES = ['dashboard','office','planning','production','productionlog','dispatch','reporting','inventory','timber','admin','floor-tablet','chainsaw','receiving','ops','qa','postproduction','allocation','floor'];
             const targetPage = VALID_PAGES.includes(pwaPage) ? pwaPage : 'dashboard';
             setPage(targetPage);
             if (['floor','chainsaw','receiving'].includes(targetPage) || pwaApp) {

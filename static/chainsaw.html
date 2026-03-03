@@ -124,8 +124,8 @@ const App = () => {
   }, []);
 
   const doRedirect = (token, user) => {
-    const params = new URLSearchParams({ _token: token, _role: user.role, _page: PAGE_KEY, _app: PAGE_KEY });
-    window.location.href = '/?' + params.toString();
+    sessionStorage.setItem('hyne_pwa_handoff', JSON.stringify({ token, role: user.role, page: PAGE_KEY, app: PAGE_KEY }));
+    window.location.href = '/?_page=' + PAGE_KEY + '&_app=' + PAGE_KEY;
   };
 
   const handleLogin = (data) => {

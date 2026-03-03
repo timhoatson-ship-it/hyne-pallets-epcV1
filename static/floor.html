@@ -141,7 +141,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 const API_BASE = window.location.origin + '/api';
 const SESSION_KEY = 'hyne_floor_session';
 let QA_INTERVAL = 20;
-const LABOUR_RATE = 55;
+let LABOUR_RATE = 55;
 const ALLOWED_ROLES = ['floor_worker','executive','admin','production_manager','qa_lead'];
 
 const api = async (path, options = {}, token = null) => {
@@ -609,8 +609,8 @@ const HomeScreen = ({ token, user, zone, station, sessionStart, onStartJob, onSt
                   onChange={e=>setManualQty(e.target.value)} placeholder="e.g. 100" style={{width:'100%'}} />
               </div>
               <button className="action-btn" onClick={()=>onStartJob({type:'manual',sku:manualSku,qty:parseInt(manualQty)||0})}
-                disabled={!manualSku&&!manualQty}
-                style={{width:'100%',background:'#6366F1',fontSize:'20px',opacity:(!manualSku&&!manualQty)?0.45:1}}>
+                disabled={!manualSku||!manualQty}
+                style={{width:'100%',background:'#6366F1',fontSize:'20px',opacity:(!manualSku||!manualQty)?0.45:1}}>
                 ▶ START MANUAL JOB
               </button>
             </div>
@@ -734,7 +734,7 @@ const SetupTimerScreen = ({ token, user, zone, station, sessionStart, setupInfo,
       }
     } catch(e){ toast('Failed to complete setup', 'error'); }
     api('/production/floor-event',{method:'POST',body:JSON.stringify({event_type:'setup_completed',entity_type:'setup_logs',entity_id:sessionId,duration_seconds:elapsed,zone:zone?.name,station:station?.name})},token).catch(()=>{});
-    if (startJob) onStartJobFromSetup(null);
+    if (startJob) onStartJobFromSetup(sessionId);
     else onFinishSetup(elapsed);
   };
 
@@ -779,6 +779,9 @@ const ActiveJobScreen = ({ token, user, zone, station, sessionStart, jobInfo, on
   const [pauseStart, setPauseStart] = useState(null);
   const [qaAlert, setQaAlert] = useState(false);
   const [lastQaAt, setLastQaAt] = useState(0);
+  const [qaDefectModal, setQaDefectModal] = useState(false);
+  const [subAssemblyMode, setSubAssemblyMode] = useState(false);
+  const [subAssemblyCount, setSubAssemblyCount] = useState(0);
   const [combinedProgress, setCombinedProgress] = useState(null);
   const [starting, setStarting] = useState(!jobInfo.sessionId);
   const pollRef = useRef(null);
@@ -816,6 +819,7 @@ const ActiveJobScreen = ({ token, user, zone, station, sessionStart, jobInfo, on
         setStatus(d.status||'active');
         if (d.status==='paused' && !pauseStart) setPauseStart(d.paused_at||new Date().toISOString());
         if (d.status==='active') setPauseStart(null);
+        if (d.is_sub_assembly_mode) { setSubAssemblyMode(true); setSubAssemblyCount(d.sub_assembly_count||0); }
       } catch(e){}
     };
     refresh();
@@ -844,6 +848,25 @@ const ActiveJobScreen = ({ token, user, zone, station, sessionStart, jobInfo, on
     try {
       await api(`/production/sessions/${sessionId}/log`,{method:'PUT',body:JSON.stringify({quantity_change:delta})},token);
     } catch(e){ setPallets(pallets); toast('Failed to log quantity','error'); }
+  };
+
+  const toggleSubAssembly = async()=>{
+    if (!sessionId) return;
+    const newMode = !subAssemblyMode;
+    try {
+      await api(`/production/sessions/${sessionId}/sub-assembly`,{method:'PUT',body:JSON.stringify({is_sub_assembly_mode:newMode?1:0})},token);
+      setSubAssemblyMode(newMode);
+      toast(newMode?'Sub-assembly mode ON':'Sub-assembly mode OFF','info');
+    } catch(e){ toast('Failed to toggle sub-assembly','error'); }
+  };
+
+  const logSubAssembly = async(delta)=>{
+    if (!sessionId||!subAssemblyMode) return;
+    const newCount = Math.max(0, subAssemblyCount+delta);
+    setSubAssemblyCount(newCount);
+    try {
+      await api(`/production/sessions/${sessionId}/sub-assembly-log`,{method:'PUT',body:JSON.stringify({quantity_change:delta})},token);
+    } catch(e){ setSubAssemblyCount(subAssemblyCount); toast('Failed to log sub-assembly','error'); }
   };
 
   const target = session?.target_quantity||jobInfo.wo?.quantity||jobInfo.qty||0;
@@ -882,16 +905,33 @@ const ActiveJobScreen = ({ token, user, zone, station, sessionStart, jobInfo, on
             <div style={{fontFamily:'Barlow Condensed,sans-serif',fontSize:'22px',fontWeight:800,letterSpacing:'0.05em'}}>🔍 QA CHECK DUE</div>
             <div style={{fontSize:'16px',opacity:0.9}}>Every {QA_INTERVAL} pallets — check quality now</div>
           </div>
-          <button onClick={async()=>{
-            try {
-              await api('/production/qa-check',{method:'POST',body:JSON.stringify({session_id:sessionId,pallet_count:pallets,passed:1})},token);
-            } catch(e){}
-            setQaAlert(false);
-          }}
-            style={{background:'white',color:'#92400E',border:'none',borderRadius:'10px',padding:'10px 18px',fontSize:'17px',fontWeight:800,flexShrink:0}}>
-            ✓ QA Passed
-          </button>
+          <div style={{display:'flex',gap:'8px',flexShrink:0}}>
+            <button onClick={()=>setQaDefectModal(true)}
+              style={{background:'#ED1C24',color:'white',border:'none',borderRadius:'10px',padding:'10px 16px',fontSize:'17px',fontWeight:800,minHeight:'44px'}}>
+              QA Issue ✗
+            </button>
+            <button onClick={async()=>{
+              try {
+                await api('/production/qa-check',{method:'POST',body:JSON.stringify({session_id:sessionId,pallet_count:pallets,passed:1})},token);
+              } catch(e){}
+              setQaAlert(false);
+            }}
+              style={{background:'white',color:'#92400E',border:'none',borderRadius:'10px',padding:'10px 16px',fontSize:'17px',fontWeight:800,minHeight:'44px'}}>
+              QA Passed ✓
+            </button>
+          </div>
         </div>
+      )}
+
+      {/* QA Defect Modal */}
+      {qaDefectModal && (
+        <QADefectModal
+          sessionId={sessionId}
+          pallets={pallets}
+          token={token}
+          onRecorded={()=>{ setQaDefectModal(false); setQaAlert(false); }}
+          onCancel={()=>setQaDefectModal(false)}
+        />
       )}
 
       <div className="content-area" style={{flex:1,padding:'16px'}}>
@@ -961,6 +1001,31 @@ const ActiveJobScreen = ({ token, user, zone, station, sessionStart, jobInfo, on
           </div>
         )}
 
+        {/* Sub-assembly mode */}
+        <div style={{background:subAssemblyMode?'#EEF2FF':'white',borderRadius:'16px',padding:'16px 18px',marginBottom:'14px',boxShadow:'0 2px 8px rgba(0,0,0,.07)',border:subAssemblyMode?'2px solid #6366F1':'2px solid transparent'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <div>
+              <div style={{fontSize:'17px',fontWeight:700,color:'#07324C'}}>Sub-Assembly Mode</div>
+              <div style={{fontSize:'14px',color:'#6B7280',marginTop:'2px'}}>{subAssemblyMode?'Tracking sub-assembly components':'Toggle to track sub-assemblies separately'}</div>
+            </div>
+            <button onClick={toggleSubAssembly} disabled={status==='paused'}
+              style={{background:subAssemblyMode?'#6366F1':'#E5E7EB',color:subAssemblyMode?'white':'#374151',border:'none',borderRadius:'12px',padding:'10px 18px',fontSize:'16px',fontWeight:700,minHeight:'44px',cursor:'pointer'}}>
+              {subAssemblyMode?'ON':'OFF'}
+            </button>
+          </div>
+          {subAssemblyMode && (
+            <div style={{marginTop:'14px',paddingTop:'14px',borderTop:'1px solid #C7D2FE'}}>
+              <div style={{fontSize:'15px',color:'#6B7280',marginBottom:'6px',textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:600}}>Sub-Assembly Count</div>
+              <div style={{fontSize:'48px',fontWeight:900,color:'#6366F1',textAlign:'center',fontFamily:'Barlow Condensed,sans-serif'}}>{subAssemblyCount}</div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 2fr 1fr',gap:'10px',marginTop:'10px'}}>
+                <button className="counter-btn minus" onClick={()=>logSubAssembly(-1)} disabled={subAssemblyCount<=0||status==='paused'} style={{fontSize:'18px',padding:'10px'}}>−1</button>
+                <button className="counter-btn plus" onClick={()=>logSubAssembly(1)} disabled={status==='paused'} style={{fontSize:'18px',padding:'10px',background:'#6366F1'}}>+1</button>
+                <button className="counter-btn plus10" onClick={()=>logSubAssembly(10)} disabled={status==='paused'} style={{fontSize:'18px',padding:'10px',background:'#4F46E5'}}>+10</button>
+              </div>
+            </div>
+          )}
+        </div>
+
         {/* Timer */}
         <div style={{background:'#07324C',borderRadius:'16px',padding:'16px 20px',marginBottom:'14px',display:'flex',justifyContent:'space-between',alignItems:'center',color:'white'}}>
           <div style={{fontSize:'17px',color:'rgba(255,255,255,0.65)'}}>Run Time</div>
@@ -983,6 +1048,121 @@ const ActiveJobScreen = ({ token, user, zone, station, sessionStart, jobInfo, on
           <button className="action-btn" onClick={()=>onComplete(sessionId)}
             style={{background:'#059669',flexDirection:'column',gap:'4px',padding:'18px 8px',fontSize:'17px'}}>
             ✓ COMPLETE
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════
+// QA DEFECT MODAL
+// ═══════════════════════════════════════════════════════════════
+const QADefectModal = ({ sessionId, pallets, token, onRecorded, onCancel }) => {
+  const [defectType, setDefectType] = useState(null);
+  const [quantity, setQuantity] = useState('1');
+  const [notes, setNotes] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const DEFECT_TYPES = [
+    { key:'rework',  label:'Rework',  color:'#D97706', bg:'#FEF3C7', textColor:'#92400E' },
+    { key:'seconds', label:'Seconds', color:'#EA580C', bg:'#FFEDD5', textColor:'#9A3412' },
+    { key:'destroy', label:'Destroy', color:'#DC2626', bg:'#FEE2E2', textColor:'#991B1B' },
+  ];
+
+  const handleRecord = async() => {
+    if (!defectType) { toast('Select a defect type', 'error'); return; }
+    const qty = parseInt(quantity, 10);
+    if (!qty || qty < 1) { toast('Enter a valid quantity', 'error'); return; }
+    setLoading(true);
+    try {
+      // Create (or re-use) the QA inspection for this pallet count
+      const inspection = await api('/production/qa-check', {
+        method: 'POST',
+        body: JSON.stringify({ session_id: sessionId, pallet_count: pallets, passed: 0 })
+      }, token);
+      const inspectionId = inspection.id || inspection.inspection_id;
+      // Record the defect against the inspection
+      await api(`/qa/inspections/${inspectionId}/defects`, {
+        method: 'POST',
+        body: JSON.stringify({ defect_type: defectType, quantity: qty, notes: notes.trim() || undefined })
+      }, token);
+      toast(`${defectType.charAt(0).toUpperCase() + defectType.slice(1)} defect recorded (qty ${qty})`, 'success');
+      onRecorded();
+    } catch(e) {
+      toast('Failed to record defect: ' + e.message, 'error');
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div className="modal-center-bg" onClick={onCancel}>
+      <div className="modal-card" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'20px'}}>
+          <div style={{fontFamily:'Barlow Condensed,sans-serif',fontSize:'28px',fontWeight:800,color:'#07324C'}}>Record QA Issue</div>
+          <button onClick={onCancel} style={{background:'none',border:'none',fontSize:'32px',color:'#9CA3AF',lineHeight:1,cursor:'pointer'}}>×</button>
+        </div>
+
+        {/* Defect type buttons */}
+        <div style={{marginBottom:'20px'}}>
+          <div className="section-lbl" style={{marginBottom:'10px'}}>Defect Type</div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'10px'}}>
+            {DEFECT_TYPES.map(dt => (
+              <button key={dt.key}
+                onClick={() => setDefectType(dt.key)}
+                style={{
+                  minHeight:'56px',
+                  borderRadius:'12px',
+                  border: `2.5px solid ${defectType === dt.key ? dt.color : '#E5E7EB'}`,
+                  background: defectType === dt.key ? dt.bg : 'white',
+                  color: defectType === dt.key ? dt.textColor : '#374151',
+                  fontFamily:'DM Sans,sans-serif',
+                  fontSize:'17px',
+                  fontWeight:700,
+                  cursor:'pointer',
+                  transition:'all .12s',
+                }}>
+                {dt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Quantity */}
+        <div style={{marginBottom:'16px'}}>
+          <div className="section-lbl" style={{marginBottom:'8px'}}>Units Affected</div>
+          <input
+            type="number" inputMode="numeric" min="1"
+            className="sku-input"
+            value={quantity}
+            onChange={e => setQuantity(e.target.value)}
+            style={{width:'100%'}}
+          />
+        </div>
+
+        {/* Notes */}
+        <div style={{marginBottom:'24px'}}>
+          <div className="section-lbl" style={{marginBottom:'8px'}}>Notes <span style={{fontWeight:400,textTransform:'none',fontSize:'13px',color:'#9CA3AF'}}>(optional)</span></div>
+          <textarea
+            className="sku-input"
+            value={notes}
+            onChange={e => setNotes(e.target.value)}
+            placeholder="Describe the defect..."
+            rows={3}
+            style={{width:'100%',resize:'vertical'}}
+          />
+        </div>
+
+        {/* Action buttons */}
+        <div style={{display:'flex',gap:'12px'}}>
+          <button className="action-btn" onClick={onCancel}
+            style={{flex:1,background:'#6B7280',fontSize:'18px',padding:'16px'}}>
+            Cancel
+          </button>
+          <button className="action-btn" onClick={handleRecord} disabled={loading||!defectType}
+            style={{flex:2,background:'#ED1C24',fontSize:'18px',padding:'16px',opacity:(!defectType||loading)?0.5:1}}>
+            {loading ? 'Recording...' : '⚠ Record Defect'}
           </button>
         </div>
       </div>
@@ -1212,6 +1392,13 @@ const App = () => {
   const [sessionStatus, setSessionStatus] = useState('active');
   const [showPauseModal, setShowPauseModal] = useState(false);
   const [completedSessionId, setCompletedSessionId] = useState(null);
+
+  // Fetch labour rate from backend on mount (fallback to 55)
+  useEffect(()=>{
+    api('/labour-config').then(d=>{
+      if (d && typeof d.default_rate === 'number') LABOUR_RATE = d.default_rate;
+    }).catch(()=>{});
+  },[]);
 
   // Restore session on load
   useEffect(()=>{

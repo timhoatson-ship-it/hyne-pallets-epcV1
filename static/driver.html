@@ -3,6 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#07324C">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="mobile-web-app-capable" content="yes" />
   <title>Hyne Pallets — Driver App</title>
@@ -998,6 +1000,159 @@ const PhotoCapture = ({ title, onConfirm, onSkip }) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
+// SIGNATURE CAPTURE
+// ═══════════════════════════════════════════════════════════════
+const SignatureCapture = ({ onConfirm, onSkip }) => {
+  const canvasRef = useRef(null);
+  const [drawing, setDrawing] = useState(false);
+  const [hasSignature, setHasSignature] = useState(false);
+  const [showPlaceholder, setShowPlaceholder] = useState(true);
+  const lastPos = useRef(null);
+
+  const getPos = (e, canvas) => {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    if (e.touches && e.touches.length > 0) {
+      return {
+        x: (e.touches[0].clientX - rect.left) * scaleX,
+        y: (e.touches[0].clientY - rect.top) * scaleY,
+      };
+    }
+    return {
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top) * scaleY,
+    };
+  };
+
+  const startDraw = (e) => {
+    e.preventDefault();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    setDrawing(true);
+    setShowPlaceholder(false);
+    setHasSignature(true);
+    const pos = getPos(e, canvas);
+    lastPos.current = pos;
+    const ctx = canvas.getContext('2d');
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, 1, 0, Math.PI * 2);
+    ctx.fillStyle = '#07324C';
+    ctx.fill();
+  };
+
+  const draw = (e) => {
+    e.preventDefault();
+    if (!drawing) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const pos = getPos(e, canvas);
+    const ctx = canvas.getContext('2d');
+    ctx.beginPath();
+    ctx.moveTo(lastPos.current.x, lastPos.current.y);
+    ctx.lineTo(pos.x, pos.y);
+    ctx.strokeStyle = '#07324C';
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+    lastPos.current = pos;
+  };
+
+  const endDraw = (e) => {
+    e.preventDefault();
+    setDrawing(false);
+    lastPos.current = null;
+  };
+
+  const clearCanvas = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    setHasSignature(false);
+    setShowPlaceholder(true);
+  };
+
+  const acceptSignature = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dataUrl = canvas.toDataURL('image/png');
+    onConfirm(dataUrl);
+  };
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal-sheet">
+        <h2 className="text-xl font-bold text-navy mb-1 text-center">Customer Signature</h2>
+        <p className="text-gray-500 text-sm text-center mb-4">Sign below to confirm delivery</p>
+
+        <div style={{ position: 'relative', width: '100%', marginBottom: 16 }}>
+          <canvas
+            ref={canvasRef}
+            width={600}
+            height={220}
+            style={{
+              width: '100%',
+              height: 'auto',
+              border: '2px solid #D1D5DB',
+              borderRadius: 12,
+              background: '#F9FAFB',
+              display: 'block',
+              touchAction: 'none',
+              cursor: 'crosshair',
+            }}
+            onMouseDown={startDraw}
+            onMouseMove={draw}
+            onMouseUp={endDraw}
+            onMouseLeave={endDraw}
+            onTouchStart={startDraw}
+            onTouchMove={draw}
+            onTouchEnd={endDraw}
+          />
+          {showPlaceholder && (
+            <div style={{
+              position: 'absolute',
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              color: '#9CA3AF',
+              fontSize: 16,
+              fontStyle: 'italic',
+              pointerEvents: 'none',
+              userSelect: 'none',
+            }}>
+              Sign here
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-3 mb-3">
+          <button
+            onClick={clearCanvas}
+            className="flex-1 py-4 rounded-xl font-semibold text-gray-600 border-2 border-gray-200 bg-white text-base">
+            Clear
+          </button>
+          <button
+            onClick={acceptSignature}
+            disabled={!hasSignature}
+            className="flex-1 py-4 rounded-xl font-bold text-white text-base"
+            style={{ background: hasSignature ? '#07324C' : '#9CA3AF' }}>
+            Accept Signature
+          </button>
+        </div>
+
+        <button
+          onClick={onSkip}
+          className="w-full py-4 rounded-2xl text-lg text-gray-500 border-2 border-gray-200 bg-white">
+          Skip
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════
 // FATIGUE BLOCKER — NEW blocking overlay for mandatory breaks
 // ═══════════════════════════════════════════════════════════════
 const FatigueBlocker = ({ type, onBreak, onClockOff }) => {
@@ -1774,7 +1929,7 @@ const RunSheetView = ({ shift, token, onClose }) => {
         body: JSON.stringify({
           delivery_log_id: stop.delivery_log_id,
           shift_id: shift.id,
-          total_km: 0, // TODO: compute from odometer readings when available in this context
+          total_km: null, // server computes from delivery_run_stages when null/falsy
         })
       }, token);
       toast(`${stop.client_name || "Stop"} delivered!`, "success");
@@ -2375,6 +2530,8 @@ const DriverApp = ({ user, token, shift, onClockOff }) => {
   const [showPhotoCapture, setShowPhotoCapture] = useState(false);
   const [photoCaptureTitle, setPhotoCaptureTitle] = useState("");
   const [photoCaptureResolve, setPhotoCaptureResolve] = useState(null);
+  const [showSignatureCapture, setShowSignatureCapture] = useState(false);
+  const [signatureCaptureResolve, setSignatureCaptureResolve] = useState(null);
   const [showCostBreakdown, setShowCostBreakdown] = useState(false);
   const [costBreakdownData, setCostBreakdownData] = useState(null);
 
@@ -2498,6 +2655,12 @@ const DriverApp = ({ user, token, shift, onClockOff }) => {
     setShowPhotoCapture(true);
   });
 
+  // Prompt for signature (returns a promise)
+  const promptSignature = () => new Promise((resolve) => {
+    setSignatureCaptureResolve({ fn: resolve });
+    setShowSignatureCapture(true);
+  });
+
   // Action label
   const getNextActionLabel = () => {
     if (isOnBreak) return "End Break";
@@ -2514,6 +2677,24 @@ const DriverApp = ({ user, token, shift, onClockOff }) => {
 
   // Is current stage a driving stage?
   const isDrivingStage = (stage) => stage?.includes("driving");
+
+  // Compute total km driven for a delivery from stage odometer data.
+  // Returns a number if odometer data is available, otherwise null.
+  const computeDeliveryKm = (deliveryLogId) => {
+    const deliveryStages = allStages.filter(s => s.delivery_log_id === deliveryLogId);
+    let total = 0;
+    let hasData = false;
+    for (const s of deliveryStages) {
+      if (s.manual_km) {
+        total += s.manual_km;
+        hasData = true;
+      } else if (s.odometer_start != null && s.odometer_end != null) {
+        total += (s.odometer_end - s.odometer_start);
+        hasData = true;
+      }
+    }
+    return hasData ? total : null;
+  };
 
   const handleNextAction = async () => {
     // End break
@@ -2570,6 +2751,23 @@ const DriverApp = ({ user, token, shift, onClockOff }) => {
               }),
             }, token);
           } catch (e) { console.warn("Photo upload failed:", e); }
+        }
+        // After photo, prompt for customer signature
+        const sigData = await promptSignature();
+        if (sigData) {
+          try {
+            await api("/driver/photo", {
+              method: "POST",
+              body: JSON.stringify({
+                delivery_log_id: activeDelivery.id,
+                shift_id: shift.id,
+                photo_type: "signature",
+                photo_data: sigData,
+                lat: loc.lat,
+                lng: loc.lng,
+              }),
+            }, token);
+          } catch (e) { console.warn("Signature upload failed:", e); }
         }
       }
 
@@ -2648,7 +2846,7 @@ const DriverApp = ({ user, token, shift, onClockOff }) => {
           body: JSON.stringify({
             delivery_log_id: activeDelivery.id,
             shift_id: shift.id,
-            total_km: 0, // TODO: compute from odometer readings when available in this context
+            total_km: computeDeliveryKm(activeDelivery.id), // computed from stage odometer readings; null if unavailable (server recalculates)
             tolls: 0,
           }),
         }, token);
@@ -2658,12 +2856,11 @@ const DriverApp = ({ user, token, shift, onClockOff }) => {
         setStageStartedAt(null);
         toast(deliveryType === "collection" ? "Collection complete!" : "Delivery complete!", "success");
 
-        // Try to show cost breakdown
+        // Store cost breakdown data (viewable from menu, not auto-shown to avoid interrupting multi-drop)
         try {
           const costs = await api(`/driver/cost-breakdown?delivery_log_id=${activeDelivery.id}`, {}, token);
           if (costs) {
             setCostBreakdownData(costs);
-            setShowCostBreakdown(true);
           }
         } catch (e) { /* cost breakdown is optional */ }
 
@@ -2917,6 +3114,9 @@ const DriverApp = ({ user, token, shift, onClockOff }) => {
               <h3 className="text-xl font-bold text-navy">Menu</h3>
               <button onClick={() => setMenuOpen(false)} className="text-2xl text-gray-400 w-10 h-10 flex items-center justify-center">&times;</button>
             </div>
+            {costBreakdownData && (
+              <div className="menu-item" onClick={() => { setShowCostBreakdown(true); setMenuOpen(false); }}>💰 View Costs</div>
+            )}
             <div className="menu-item" onClick={handleShowSummary}>📊 Shift Summary</div>
             <div className="menu-item" onClick={() => { setShowRunSheet(true); setMenuOpen(false); }}>📋 Run Sheet</div>
             <div className="menu-item" onClick={() => { setShowIncident(true); setMenuOpen(false); }}>⚠️ Report Incident</div>
@@ -2987,6 +3187,26 @@ const DriverApp = ({ user, token, shift, onClockOff }) => {
             if (photoCaptureResolve) {
               photoCaptureResolve.fn(null);
               setPhotoCaptureResolve(null);
+            }
+          }}
+        />
+      )}
+
+      {/* Signature Capture */}
+      {showSignatureCapture && (
+        <SignatureCapture
+          onConfirm={(dataUrl) => {
+            setShowSignatureCapture(false);
+            if (signatureCaptureResolve) {
+              signatureCaptureResolve.fn(dataUrl);
+              setSignatureCaptureResolve(null);
+            }
+          }}
+          onSkip={() => {
+            setShowSignatureCapture(false);
+            if (signatureCaptureResolve) {
+              signatureCaptureResolve.fn(null);
+              setSignatureCaptureResolve(null);
             }
           }}
         />
